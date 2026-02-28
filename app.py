@@ -7,7 +7,7 @@ import google.generativeai as genai
 import PyPDF2
 
 # ======================
-# 🔐 Gemini 配置（按你要求写死）
+# 🔐 Gemini 配置（写死）
 # ======================
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 MODEL_NAME = "gemini-2.5-flash"
@@ -42,24 +42,19 @@ LANG = {
 # ======================
 # 🧠 Session 初始化
 # ======================
-if "lang" not in st.session_state:
-    st.session_state.lang = "zh"
-
-if "summary" not in st.session_state:
-    st.session_state.summary = ""
-
-if "flashcards" not in st.session_state:
-    st.session_state.flashcards = []
-
-if "quiz" not in st.session_state:
-    st.session_state.quiz = []
+for key, default in {
+    "lang": "zh",
+    "summary": "",
+    "flashcards": [],
+    "quiz": [],
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 # ======================
 # 🌍 语言切换
 # ======================
-lang_choice = st.sidebar.selectbox(
-    "Language / 语言", ["中文", "English"]
-)
+lang_choice = st.sidebar.selectbox("Language / 语言", ["中文", "English"])
 st.session_state.lang = "zh" if lang_choice == "中文" else "en"
 T = LANG[st.session_state.lang]
 
@@ -87,7 +82,7 @@ def extract_text_from_pdfs(files) -> str:
                 text = page.extract_text()
                 if text and text.strip():
                     all_text.append(text)
-        except Exception as e:
+        except Exception:
             st.warning(f"PDF 读取失败: {file.name}")
     return "\n".join(all_text)
 
@@ -96,22 +91,30 @@ def chunk_text(text: str, chunk_size: int = 12000) -> List[str]:
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
-def call_gemini(prompt: str) -> str:
+# ⭐⭐⭐ 带重试的 Gemini 调用（抗限流）
+def call_gemini(prompt: str, retries: int = 3) -> str:
     model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(
-            temperature=TEMPERATURE,
-        ),
-    )
-    return response.text
+
+    for i in range(retries):
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=TEMPERATURE,
+                ),
+            )
+            return response.text
+        except Exception as e:
+            if i == retries - 1:
+                raise e
+            time.sleep(2 * (i + 1))
 
 
 def safe_json_load(text: str):
     try:
         text = re.sub(r"```json|```", "", text).strip()
         return json.loads(text)
-    except:
+    except Exception:
         return []
 
 
@@ -126,8 +129,28 @@ def determine_question_count(text_length: int) -> int:
         return 20
 
 
+# ⭐⭐⭐ 核心升级：Reduce 压缩（防 ResourceExhausted）
+def reduce_summaries(summaries, batch_size=5):
+    reduced = []
+
+    for i in range(0, len(summaries), batch_size):
+        batch = summaries[i:i + batch_size]
+        batch_text = "\n".join(batch)
+
+        prompt = f"""
+Condense the following study notes into a tighter academic summary.
+
+Notes:
+{batch_text}
+"""
+        reduced_text = call_gemini(prompt)
+        reduced.append(reduced_text)
+
+    return "\n".join(reduced)
+
+
 # ======================
-# 🚀 开始分析按钮
+# 🚀 开始分析
 # ======================
 if st.button(T["start"]):
 
@@ -138,9 +161,7 @@ if st.button(T["start"]):
     progress = st.progress(0)
     status = st.empty()
 
-    # ======================
-    # Step 1: 读取PDF
-    # ======================
+    # Step 1: 读取
     status.text("📥 Reading PDFs...")
     progress.progress(10)
 
@@ -150,17 +171,12 @@ if st.button(T["start"]):
         st.error("❌ 未能从PDF提取文本（可能是扫描版）")
         st.stop()
 
-    # ======================
     # Step 2: 分块
-    # ======================
-    status.text("✂️ Chunking content...")
+    status.text("✂️ Chunking...")
     progress.progress(25)
-
     chunks = chunk_text(full_text)
 
-    # ======================
-    # Step 3: 汇总分析
-    # ======================
+    # Step 3: Map summaries
     status.text("🧠 AI analyzing...")
     progress.progress(45)
 
@@ -178,13 +194,15 @@ Content:
         partial = call_gemini(prompt)
         partial_summaries.append(partial)
 
-    merged_text = "\n".join(partial_summaries)
+    # ⭐⭐⭐ 新增 Reduce（关键稳定点）
+    status.text("🧩 Compressing knowledge...")
+    progress.progress(60)
 
-    # ======================
-    # Step 4: 生成最终总结
-    # ======================
+    compressed_text = reduce_summaries(partial_summaries)
+
+    # Step 4: Final summary
     status.text("📚 Generating final review...")
-    progress.progress(65)
+    progress.progress(70)
 
     final_prompt = f"""
 You are a senior international curriculum teacher.
@@ -194,26 +212,19 @@ Create a HIGH-QUALITY exam review sheet.
 STRICT STRUCTURE:
 
 # Knowledge Explanation
-- systematic teaching
-
 # 🔴 High-Frequency Exam Points
-
 # 🟠 Common Traps
-
 # 🧠 Rapid Review Sheet
 
 Content:
-{merged_text}
+{compressed_text}
 """
 
-    final_summary = call_gemini(final_prompt)
-    st.session_state.summary = final_summary
+    st.session_state.summary = call_gemini(final_prompt)
 
-    # ======================
-    # Step 5: 闪卡
-    # ======================
-    status.text("🃏 Generating flashcards...")
-    progress.progress(80)
+    # Step 5: Flashcards
+    status.text("🃏 Flashcards...")
+    progress.progress(85)
 
     q_count = determine_question_count(len(full_text))
 
@@ -224,17 +235,15 @@ Return ONLY JSON list:
 [{{"q":"","a":""}}]
 
 Content:
-{merged_text}
+{compressed_text}
 """
 
     flash_raw = call_gemini(flash_prompt)
     st.session_state.flashcards = safe_json_load(flash_raw)
 
-    # ======================
-    # Step 6: 自测题
-    # ======================
-    status.text("🧪 Generating quiz...")
-    progress.progress(92)
+    # Step 6: Quiz
+    status.text("🧪 Quiz...")
+    progress.progress(95)
 
     quiz_prompt = f"""
 Generate {q_count} exam-style questions.
@@ -247,7 +256,7 @@ Mix:
 Return JSON list.
 
 Content:
-{merged_text}
+{compressed_text}
 """
 
     quiz_raw = call_gemini(quiz_prompt)
@@ -263,7 +272,7 @@ if st.session_state.summary:
     st.markdown(st.session_state.summary, unsafe_allow_html=True)
 
 # ======================
-# 🃏 闪卡
+# 🃏 Flashcards
 # ======================
 if st.session_state.flashcards:
     st.subheader("🃏 Flashcards")
@@ -273,7 +282,7 @@ if st.session_state.flashcards:
             st.write("**A:**", card.get("a", ""))
 
 # ======================
-# 🧪 自测
+# 🧪 Quiz
 # ======================
 if st.session_state.quiz:
     st.subheader("🧪 Quiz")
