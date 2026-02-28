@@ -1,6 +1,5 @@
 import streamlit as st
 import google.generativeai as genai
-import os
 import time
 import json
 import re
@@ -22,15 +21,14 @@ genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel(MODEL_NAME)
 
 # =====================
-# 🌍 语言系统（强制版）
+# 🌍 语言系统（强制）
 # =====================
 lang = st.sidebar.selectbox("Language / 语言", ["English", "中文"])
 
 def lang_instruction():
     if lang == "中文":
         return "IMPORTANT: You MUST output ALL content in SIMPLIFIED CHINESE."
-    else:
-        return "IMPORTANT: You MUST output ALL content in ENGLISH."
+    return "IMPORTANT: You MUST output ALL content in ENGLISH."
 
 # =====================
 # 📄 PDF 读取
@@ -46,15 +44,15 @@ def extract_text_from_pdfs(files):
     return full_text
 
 # =====================
-# ✂️ 文本分块
+# ✂️ 文本分块（更安全）
 # =====================
-def split_text(text, max_chars=12000):
-    return [text[i:i+max_chars] for i in range(0, len(text), max_chars)]
+def split_text(text, max_chars=8000):
+    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
 # =====================
-# 🤖 Gemini 调用（带重试）
+# 🤖 Gemini 调用（带退避）
 # =====================
-def call_gemini(prompt, retries=3):
+def call_gemini(prompt, retries=4):
     for attempt in range(retries):
         try:
             response = model.generate_content(
@@ -64,7 +62,7 @@ def call_gemini(prompt, retries=3):
             return response.text
         except ResourceExhausted:
             if attempt < retries - 1:
-                time.sleep(5 * (attempt + 1))
+                time.sleep(6 * (attempt + 1))
             else:
                 raise
 
@@ -79,6 +77,43 @@ def clean_json(text):
     return text
 
 # =====================
+# 🔥 递归压缩（核心修复）
+# =====================
+def reduce_summaries(summaries, progress_bar, percent_text):
+    """
+    多轮递归压缩，防止 token 爆炸
+    """
+    current = summaries
+    base_progress = 65
+
+    while len(current) > 1:
+        new_round = []
+
+        for i in range(0, len(current), 6):
+            batch = current[i:i + 6]
+
+            percent = base_progress + int((i / len(current)) * 20)
+            progress_bar.progress(percent)
+            percent_text.text(f"{percent}%")
+
+            reduce_prompt = f"""
+            {lang_instruction()}
+
+            Merge and organize the following summaries into a structured review.
+            Keep ALL important knowledge points.
+
+            CONTENT:
+            {chr(10).join(batch)}
+            """
+
+            reduced = call_gemini(reduce_prompt)
+            new_round.append(reduced)
+
+        current = new_round
+
+    return current[0]
+
+# =====================
 # 🧠 主界面
 # =====================
 st.title("📚 AI Course Review System")
@@ -89,7 +124,7 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# ✅ 显示文件数量（你要求的）
+# ✅ 显示文件数量
 if uploaded_files:
     st.success(f"✅ Uploaded {len(uploaded_files)} file(s)")
 
@@ -102,22 +137,21 @@ if st.button("🚀 Start Analysis") and uploaded_files:
     percent_text = st.empty()
 
     # ===== Step 1 =====
-    percent_text.text("10%")
     progress_bar.progress(10)
+    percent_text.text("10%")
 
     raw_text = extract_text_from_pdfs(uploaded_files)
 
     # ===== Step 2 =====
-    percent_text.text("30%")
-    progress_bar.progress(30)
+    progress_bar.progress(25)
+    percent_text.text("25%")
 
     chunks = split_text(raw_text)
-
     partial_summaries = []
 
-    # ===== Step 3 =====
+    # ===== Step 3 分块总结 =====
     for i, chunk in enumerate(chunks):
-        percent = 30 + int((i / len(chunks)) * 30)
+        percent = 25 + int((i / len(chunks)) * 40)
         progress_bar.progress(percent)
         percent_text.text(f"{percent}%")
 
@@ -127,8 +161,9 @@ if st.button("🚀 Start Analysis") and uploaded_files:
         You are an expert teacher.
 
         TASK:
-        1. Explain key knowledge clearly
-        2. Then summarize important exam points
+        1. First clearly explain the key knowledge.
+        2. Then list the important exam points.
+        3. Highlight very important parts using **bold**.
 
         TEXT:
         {chunk}
@@ -137,29 +172,21 @@ if st.button("🚀 Start Analysis") and uploaded_files:
         summary = call_gemini(prompt)
         partial_summaries.append(summary)
 
-    # ===== Step 4 压缩 =====
-    progress_bar.progress(65)
-    percent_text.text("65%")
-
-    reduce_prompt = f"""
-    {lang_instruction()}
-
-    Merge and organize the following summaries into a structured review.
-
-    CONTENT:
-    {''.join(partial_summaries)}
-    """
-
-    final_summary = call_gemini(reduce_prompt)
+    # ===== Step 4 🔥 安全 reduce =====
+    final_summary = reduce_summaries(
+        partial_summaries,
+        progress_bar,
+        percent_text
+    )
 
     # ===== Step 5 Flashcards =====
-    progress_bar.progress(80)
-    percent_text.text("80%")
+    progress_bar.progress(88)
+    percent_text.text("88%")
 
     flash_prompt = f"""
     {lang_instruction()}
 
-    Generate 5–20 flashcards.
+    Generate 5–20 high-quality flashcards based on the review.
 
     CONTENT:
     {final_summary}
@@ -167,9 +194,9 @@ if st.button("🚀 Start Analysis") and uploaded_files:
 
     flashcards = call_gemini(flash_prompt)
 
-    # ===== Step 6 Quiz（JSON 强制）=====
-    progress_bar.progress(90)
-    percent_text.text("90%")
+    # ===== Step 6 Quiz =====
+    progress_bar.progress(94)
+    percent_text.text("94%")
 
     quiz_prompt = f"""
     {lang_instruction()}
@@ -196,19 +223,16 @@ if st.button("🚀 Start Analysis") and uploaded_files:
 
     quiz_raw = call_gemini(quiz_prompt)
 
-    # 🧹 安全解析
     quiz_data = []
     try:
         cleaned = clean_json(quiz_raw)
         quiz_data = json.loads(cleaned)
-    except Exception as e:
+    except Exception:
         st.error("Quiz parsing failed — but app continues.")
-        quiz_data = []
 
     # ===== 完成 =====
     progress_bar.progress(100)
     percent_text.text("100%")
-
     st.success("✅ Analysis Complete!")
 
     # =====================
@@ -224,7 +248,7 @@ if st.button("🚀 Start Analysis") and uploaded_files:
     st.markdown(flashcards)
 
     # =====================
-    # 📝 Quiz（稳如狗版）
+    # 📝 Quiz
     # =====================
     st.header("📝 Quiz")
 
