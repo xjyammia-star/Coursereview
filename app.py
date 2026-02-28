@@ -1,210 +1,222 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
-import json
+import google.generativeai as genai
+import PyPDF2
 import time
+import json
+from io import BytesIO
 
-# =========================
-# ⭐ 页面配置
-# =========================
+# ======================
+# 🔐 页面配置
+# ======================
 st.set_page_config(
-    page_title="AI Learning Report",
+    page_title="AI Course Review",
+    page_icon="📚",
     layout="wide"
 )
 
-# =========================
-# ⭐ Gemini 安全调用（修复 ResourceExhausted）
-# =========================
-def call_gemini_safe(model, prompt, temperature=0.3, max_retries=3):
-    """
-    带自动重试的 Gemini 调用
-    修复 ResourceExhausted 崩溃
-    """
-    for attempt in range(max_retries):
-        try:
-            response = model.generate_content(
-                prompt,
-                generation_config={"temperature": temperature}
-            )
-            return response.text
+# ======================
+# 🔐 API KEY
+# ======================
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
+if not GEMINI_API_KEY:
+    st.error("❌ Please set GEMINI_API_KEY in Streamlit secrets.")
+    st.stop()
 
-        except Exception as e:
-            err_str = str(e)
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-            # ⭐ 专门处理配额/限流
-            if "ResourceExhausted" in err_str or "429" in err_str:
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    st.warning(f"⚠️ AI繁忙，自动重试中 ({attempt+1}/{max_retries})…")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    return "AI service is busy. Please try again later."
-
-            # ⭐ 其它错误直接抛出
-            return f"AI error: {e}"
-
-    return "AI failed."
-
-
-# =========================
-# ⭐ 学科翻译字典（关键修复）
-# =========================
-SUBJECT_TRANSLATIONS = {
-    "zh": {
-        "Math": "数学",
-        "Mathematics": "数学",
-        "English": "英语",
-        "Science": "科学",
-        "Biology": "生物",
-        "Chemistry": "化学",
-        "Physics": "物理",
-        "History": "历史",
-        "Geography": "地理",
-        "Economics": "经济",
-        "Computer Science": "计算机",
-    },
-    "en": {
-        "Math": "Math",
-        "Mathematics": "Mathematics",
-        "English": "English",
-        "Science": "Science",
-        "Biology": "Biology",
-        "Chemistry": "Chemistry",
-        "Physics": "Physics",
-        "History": "History",
-        "Geography": "Geography",
-        "Economics": "Economics",
-        "Computer Science": "Computer Science",
-    }
-}
-
-
-def translate_subject(subject, lang):
-    """
-    ⭐ 稳定学科翻译
-    不会再出现乱七八糟标签
-    """
-    subject = str(subject).strip()
-
-    if lang not in SUBJECT_TRANSLATIONS:
-        return subject
-
-    mapping = SUBJECT_TRANSLATIONS[lang]
-
-    # 精确匹配
-    if subject in mapping:
-        return mapping[subject]
-
-    # 模糊匹配（关键增强）
-    for k in mapping:
-        if k.lower() in subject.lower():
-            return mapping[k]
-
-    return subject
-
-
-# =========================
-# ⭐ 雷达图数据准备（核心修复）
-# =========================
-def prepare_radar_data(df, lang):
-    """
-    ✅ 永远使用真实学科列
-    ✅ 永远按所选语言翻译
-    ✅ 不再出现奇怪标签
-    """
-    subjects = df["Subject"].tolist()
-    scores = df["Score"].tolist()
-
-    translated_subjects = [
-        translate_subject(s, lang) for s in subjects
-    ]
-
-    return translated_subjects, scores
-
-
-# =========================
-# ⭐ 绘制雷达图
-# =========================
-def draw_radar_chart(subjects, scores):
-    import plotly.graph_objects as go
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatterpolar(
-        r=scores,
-        theta=subjects,
-        fill='toself',
-        name='Performance'
-    ))
-
-    fig.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-        showlegend=False,
-        height=500
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-
-# =========================
-# ⭐ UI
-# =========================
-st.title("📊 AI Learning Report")
-
-# 语言选择
-lang = st.radio(
-    "Language / 语言",
-    ["en", "zh"],
-    horizontal=True
+# ======================
+# 🌍 语言
+# ======================
+language = st.sidebar.selectbox(
+    "🌐 Language / 语言",
+    ["English", "中文"]
 )
 
-uploaded_file = st.file_uploader("Upload score CSV", type=["csv"])
+def t(en, zh):
+    return zh if language == "中文" else en
 
-# =========================
-# ⭐ 主流程
-# =========================
-if uploaded_file:
+# ======================
+# 📄 PDF 读取
+# ======================
+def extract_text_from_pdfs(uploaded_files):
+    text = ""
+    for file in uploaded_files:
+        reader = PyPDF2.PdfReader(file)
+        for page in reader.pages:
+            content = page.extract_text()
+            if content:
+                text += content + "\n"
+    return text
 
-    df = pd.read_csv(uploaded_file)
+# ======================
+# 🧠 安全调用 Gemini（带重试）
+# ======================
+def call_gemini(prompt, max_retries=5):
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            wait_time = 2 ** attempt
+            time.sleep(wait_time)
+    return "⚠️ AI temporarily unavailable. Please try again."
 
-    # ===== 必要列检查 =====
-    if not {"Subject", "Score"}.issubset(df.columns):
-        st.error("CSV must contain Subject and Score columns.")
+# ======================
+# ✂️ 文本分块（防炸）
+# ======================
+def chunk_text(text, chunk_size=12000):
+    return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+
+# ======================
+# 🧠 主界面
+# ======================
+st.title("📚 AI Course Review Generator")
+
+uploaded_files = st.file_uploader(
+    t("Upload PDF files", "上传PDF文件"),
+    type=["pdf"],
+    accept_multiple_files=True
+)
+
+# ======================
+# 📊 显示文件数量
+# ======================
+if uploaded_files:
+    st.success(
+        t(
+            f"Uploaded {len(uploaded_files)} file(s)",
+            f"已上传 {len(uploaded_files)} 个文件"
+        )
+    )
+
+# ======================
+# 🚀 开始分析
+# ======================
+if uploaded_files and st.button(t("Start Analysis", "开始分析")):
+
+    progress_bar = st.progress(0)
+    progress_text = st.empty()
+
+    # ---------- Step 1 ----------
+    progress_text.text(t("Reading PDFs...", "正在读取PDF..."))
+    progress_bar.progress(10)
+
+    full_text = extract_text_from_pdfs(uploaded_files)
+
+    if len(full_text) < 50:
+        st.error(t("PDF content too short.", "PDF内容过少"))
         st.stop()
 
-    # ===== 雷达图 =====
-    st.subheader("📈 Radar Chart")
+    # ---------- Step 2 ----------
+    progress_text.text(t("Analyzing content...", "正在分析内容..."))
+    progress_bar.progress(30)
 
-    radar_subjects, radar_scores = prepare_radar_data(df, lang)
+    chunks = chunk_text(full_text)
+    partial_summaries = []
 
-    draw_radar_chart(radar_subjects, radar_scores)
+    for i, chunk in enumerate(chunks):
+        prompt = f"""
+You are an expert teacher.
 
-    # ===== AI总结按钮 =====
-    if st.button("✨ Generate AI Summary"):
+Language: {language}
 
-        with st.spinner("AI is thinking…"):
+Task:
+1. Explain the key knowledge clearly for students.
+2. Then summarize the key review points.
 
-            # ⚠️ 这里假设你外面已初始化 model
-            try:
-                from google.generativeai import GenerativeModel
-                model = GenerativeModel("gemini-1.5-flash")
-            except Exception:
-                st.error("Gemini model not configured.")
-                st.stop()
+Content:
+{chunk}
+"""
+        summary = call_gemini(prompt)
+        partial_summaries.append(summary)
 
-            prompt = f"""
-            Analyze this student performance:
+        percent = 30 + int(30 * (i+1) / len(chunks))
+        progress_bar.progress(percent)
+        progress_text.text(
+            t(
+                f"Analyzing chunk {i+1}/{len(chunks)}...",
+                f"正在分析第 {i+1}/{len(chunks)} 部分..."
+            )
+        )
 
-            {df.to_string(index=False)}
+    # ---------- Step 3 ----------
+    progress_text.text(t("Merging results...", "正在合并结果..."))
+    progress_bar.progress(70)
 
-            Give a short professional summary.
-            """
+    merged_text = "\n\n".join(partial_summaries)
 
-            summary = call_gemini_safe(model, prompt)
+    reduce_prompt = f"""
+Language: {language}
 
-        st.subheader("🧠 AI Summary")
-        st.write(summary)
+Please produce a FINAL structured review including:
 
-else:
-    st.info("Please upload a CSV file to begin.")
+1. Clear knowledge explanation
+2. Key review points
+3. Important reminders for students
+
+Content:
+{merged_text}
+"""
+
+    final_summary = call_gemini(reduce_prompt)
+
+    progress_bar.progress(85)
+    progress_text.text(t("Generating quiz...", "正在生成测验..."))
+
+    # ---------- Step 4 Quiz ----------
+    quiz_prompt = f"""
+Language: {language}
+
+Create 5 multiple choice questions in JSON format.
+
+FORMAT STRICTLY:
+
+{{
+  "quiz":[
+    {{
+      "id":1,
+      "type":"multiple_choice",
+      "question":"...",
+      "options":{{"A":"...","B":"...","C":"...","D":"..."}},
+      "answer":"A",
+      "explanation":"..."
+    }}
+  ]
+}}
+
+Content:
+{merged_text[:8000]}
+"""
+
+    quiz_raw = call_gemini(quiz_prompt)
+
+    # 安全解析 JSON
+    quiz_data = None
+    try:
+        quiz_data = json.loads(quiz_raw)
+    except:
+        st.warning(t("Quiz parsing failed.", "Quiz解析失败"))
+
+    progress_bar.progress(100)
+    progress_text.text(t("Completed!", "完成！"))
+
+    # ======================
+    # 📘 输出
+    # ======================
+    st.header(t("📘 Review Summary", "📘 复习总结"))
+    st.write(final_summary)
+
+    # ======================
+    # 🧪 Quiz
+    # ======================
+    if quiz_data and "quiz" in quiz_data:
+        st.header("🧪 Quiz")
+
+        for q in quiz_data["quiz"]:
+            st.markdown(f"**Q{q['id']}. {q['question']}**")
+            st.write(q["options"])
+
+            with st.expander(t("Show answer", "查看答案")):
+                st.write(f"✅ {q['answer']}")
+                st.write(q["explanation"])
