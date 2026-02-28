@@ -1,337 +1,266 @@
 import streamlit as st
+import google.generativeai as genai
+import os
 import time
 import json
 import re
-from typing import List
-import google.generativeai as genai
-import PyPDF2
+from PyPDF2 import PdfReader
+from google.api_core.exceptions import ResourceExhausted
 
-# ======================
-# 🔐 Gemini 配置（写死）
-# ======================
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+# =====================
+# 页面配置
+# =====================
+st.set_page_config(page_title="AI Course Review", layout="wide")
+
+# =====================
+# Gemini 配置（写死）
+# =====================
 MODEL_NAME = "gemini-2.5-flash"
 TEMPERATURE = 0.1
 
-# ======================
-# 🌍 多语言
-# ======================
-LANG = {
-    "zh": {
-        "title": "📚 智能课程复习系统",
-        "upload": "上传课程PDF（可多个，≤200MB）",
-        "start": "🚀 开始分析",
-        "assistant": "💬 AI助教",
-        "ask": "输入你的问题",
-        "no_pdf": "⚠️ 请先上传PDF文件",
-        "uploaded": "已上传文件数量",
-        "processing": "处理中...",
-        "done": "✅ 分析完成",
-    },
-    "en": {
-        "title": "📚 AI Course Review System",
-        "upload": "Upload course PDFs (multiple, ≤200MB)",
-        "start": "🚀 Start Analysis",
-        "assistant": "💬 AI Tutor",
-        "ask": "Ask your question",
-        "no_pdf": "⚠️ Please upload PDFs first",
-        "uploaded": "Files uploaded",
-        "processing": "Processing...",
-        "done": "✅ Completed",
-    },
-}
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel(MODEL_NAME)
 
-# ======================
-# 🧠 Session 初始化
-# ======================
-for key, default in {
-    "lang": "zh",
-    "summary": "",
-    "flashcards": [],
-    "quiz": [],
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+# =====================
+# 🌍 语言系统（强制版）
+# =====================
+lang = st.sidebar.selectbox("Language / 语言", ["English", "中文"])
 
-# ======================
-# 🌍 语言切换
-# ======================
-lang_choice = st.sidebar.selectbox("Language / 语言", ["中文", "English"])
-st.session_state.lang = "zh" if lang_choice == "中文" else "en"
-T = LANG[st.session_state.lang]
+def lang_instruction():
+    if lang == "中文":
+        return "IMPORTANT: You MUST output ALL content in SIMPLIFIED CHINESE."
+    else:
+        return "IMPORTANT: You MUST output ALL content in ENGLISH."
 
-st.title(T["title"])
-
-# ======================
-# 📥 PDF 上传
-# ======================
-uploaded_files = st.file_uploader(
-    T["upload"],
-    type=["pdf"],
-    accept_multiple_files=True,
-)
-
-# ⭐⭐⭐ 显示上传数量（你要求的功能）
-if uploaded_files:
-    st.info(f"📎 {T['uploaded']}: **{len(uploaded_files)}**")
-
-# ======================
-# 🔧 工具函数
-# ======================
-
-def update_progress(progress_bar, percent_box, value):
-    progress_bar.progress(value)
-    percent_box.markdown(f"**{value}%**")
-
-
-def extract_text_from_pdfs(files) -> str:
-    all_text = []
+# =====================
+# 📄 PDF 读取
+# =====================
+def extract_text_from_pdfs(files):
+    full_text = ""
     for file in files:
-        try:
-            reader = PyPDF2.PdfReader(file)
-            for page in reader.pages:
-                text = page.extract_text()
-                if text and text.strip():
-                    all_text.append(text)
-        except Exception:
-            st.warning(f"PDF 读取失败: {file.name}")
-    return "\n".join(all_text)
+        reader = PdfReader(file)
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                full_text += text + "\n"
+    return full_text
 
+# =====================
+# ✂️ 文本分块
+# =====================
+def split_text(text, max_chars=12000):
+    return [text[i:i+max_chars] for i in range(0, len(text), max_chars)]
 
-def chunk_text(text: str, chunk_size: int = 12000) -> List[str]:
-    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-
-
-# ⭐⭐⭐ 指数退避重试（终极稳定）
-def call_gemini(prompt: str, retries: int = 4) -> str:
-    model = genai.GenerativeModel(MODEL_NAME)
-
-    for i in range(retries):
+# =====================
+# 🤖 Gemini 调用（带重试）
+# =====================
+def call_gemini(prompt, retries=3):
+    for attempt in range(retries):
         try:
             response = model.generate_content(
                 prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=TEMPERATURE,
-                ),
+                generation_config={"temperature": TEMPERATURE}
             )
             return response.text
-
-        except Exception as e:
-            if "ResourceExhausted" in str(e) and i < retries - 1:
-                wait_time = 2 ** i
-                time.sleep(wait_time)
+        except ResourceExhausted:
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
             else:
-                raise e
+                raise
 
+# =====================
+# 🧹 JSON 清洗（超稳）
+# =====================
+def clean_json(text):
+    text = re.sub(r"```json|```", "", text)
+    match = re.search(r"\[.*\]", text, re.S)
+    if match:
+        return match.group()
+    return text
 
-def safe_json_load(text: str):
-    try:
-        text = re.sub(r"```json|```", "", text).strip()
-        return json.loads(text)
-    except Exception:
-        return []
+# =====================
+# 🧠 主界面
+# =====================
+st.title("📚 AI Course Review System")
 
+uploaded_files = st.file_uploader(
+    "Upload course PDFs",
+    type="pdf",
+    accept_multiple_files=True
+)
 
-def determine_question_count(text_length: int) -> int:
-    if text_length < 5000:
-        return 5
-    elif text_length < 15000:
-        return 10
-    elif text_length < 30000:
-        return 15
-    else:
-        return 20
+# ✅ 显示文件数量（你要求的）
+if uploaded_files:
+    st.success(f"✅ Uploaded {len(uploaded_files)} file(s)")
 
-
-# ⭐⭐⭐ 超稳 Reduce（已强化）
-def reduce_summaries(summaries, batch_size=2):
-    reduced = []
-
-    for i in range(0, len(summaries), batch_size):
-        batch = summaries[i:i + batch_size]
-        batch_text = "\n".join(batch)
-
-        # 🔥 长度保护
-        if len(batch_text) > 12000:
-            batch_text = batch_text[:12000]
-
-        prompt = f"""
-Condense the following study notes into a tight academic summary.
-Be concise but keep key knowledge.
-
-Notes:
-{batch_text}
-"""
-        reduced_text = call_gemini(prompt)
-        reduced.append(reduced_text)
-
-        # 🔥 Cloud 节流
-        time.sleep(1.2)
-
-    return "\n".join(reduced)
-
-
-# ======================
+# =====================
 # 🚀 开始分析
-# ======================
-if st.button(T["start"]):
-
-    if not uploaded_files:
-        st.warning(T["no_pdf"])
-        st.stop()
+# =====================
+if st.button("🚀 Start Analysis") and uploaded_files:
 
     progress_bar = st.progress(0)
-    percent_box = st.empty()
-    status = st.empty()
+    percent_text = st.empty()
 
-    # Step 1
-    status.text("📥 Reading PDFs...")
-    update_progress(progress_bar, percent_box, 5)
+    # ===== Step 1 =====
+    percent_text.text("10%")
+    progress_bar.progress(10)
 
-    full_text = extract_text_from_pdfs(uploaded_files)
+    raw_text = extract_text_from_pdfs(uploaded_files)
 
-    if not full_text.strip():
-        st.error("❌ 未能从PDF提取文本（可能是扫描版）")
-        st.stop()
+    # ===== Step 2 =====
+    percent_text.text("30%")
+    progress_bar.progress(30)
 
-    # Step 2
-    status.text("✂️ Chunking...")
-    update_progress(progress_bar, percent_box, 15)
-
-    chunks = chunk_text(full_text)
-
-    # Step 3 MAP
-    status.text("🧠 AI analyzing...")
-    update_progress(progress_bar, percent_box, 35)
+    chunks = split_text(raw_text)
 
     partial_summaries = []
 
-    for idx, chunk in enumerate(chunks):
+    # ===== Step 3 =====
+    for i, chunk in enumerate(chunks):
+        percent = 30 + int((i / len(chunks)) * 30)
+        progress_bar.progress(percent)
+        percent_text.text(f"{percent}%")
+
         prompt = f"""
-You are an expert academic tutor.
+        {lang_instruction()}
 
-Analyze the following course content and produce structured notes.
+        You are an expert teacher.
 
-Content:
-{chunk}
-"""
-        partial = call_gemini(prompt)
-        partial_summaries.append(partial)
+        TASK:
+        1. Explain key knowledge clearly
+        2. Then summarize important exam points
 
-        # 🔥 节流（极重要）
-        time.sleep(0.8)
+        TEXT:
+        {chunk}
+        """
 
-    # Step 4 REDUCE
-    status.text("🧩 Compressing knowledge...")
-    update_progress(progress_bar, percent_box, 55)
+        summary = call_gemini(prompt)
+        partial_summaries.append(summary)
 
-    compressed_text = reduce_summaries(partial_summaries)
+    # ===== Step 4 压缩 =====
+    progress_bar.progress(65)
+    percent_text.text("65%")
 
-    # Step 5 FINAL
-    status.text("📚 Generating final review...")
-    update_progress(progress_bar, percent_box, 75)
+    reduce_prompt = f"""
+    {lang_instruction()}
 
-    final_prompt = f"""
-You are a senior international curriculum teacher.
+    Merge and organize the following summaries into a structured review.
 
-Create a HIGH-QUALITY exam review sheet.
+    CONTENT:
+    {''.join(partial_summaries)}
+    """
 
-STRICT STRUCTURE:
+    final_summary = call_gemini(reduce_prompt)
 
-# Knowledge Explanation
-# 🔴 High-Frequency Exam Points
-# 🟠 Common Traps
-# 🧠 Rapid Review Sheet
-
-Content:
-{compressed_text}
-"""
-
-    st.session_state.summary = call_gemini(final_prompt)
-
-    # Step 6 Flashcards
-    status.text("🃏 Flashcards...")
-    update_progress(progress_bar, percent_box, 90)
-
-    q_count = determine_question_count(len(full_text))
+    # ===== Step 5 Flashcards =====
+    progress_bar.progress(80)
+    percent_text.text("80%")
 
     flash_prompt = f"""
-Generate {q_count} high-quality flashcards.
+    {lang_instruction()}
 
-Return ONLY JSON list:
-[{{"q":"","a":""}}]
+    Generate 5–20 flashcards.
 
-Content:
-{compressed_text}
-"""
-    flash_raw = call_gemini(flash_prompt)
-    st.session_state.flashcards = safe_json_load(flash_raw)
+    CONTENT:
+    {final_summary}
+    """
 
-    # Step 7 Quiz
-    status.text("🧪 Quiz...")
-    update_progress(progress_bar, percent_box, 97)
+    flashcards = call_gemini(flash_prompt)
+
+    # ===== Step 6 Quiz（JSON 强制）=====
+    progress_bar.progress(90)
+    percent_text.text("90%")
 
     quiz_prompt = f"""
-Generate {q_count} exam-style questions.
+    {lang_instruction()}
 
-Mix:
-- multiple choice
-- true/false
-- short answer
+    Generate 5-20 quiz questions.
 
-Return JSON list.
+    STRICTLY RETURN JSON ARRAY.
 
-Content:
-{compressed_text}
-"""
+    FORMAT:
+    [
+      {{
+        "id": 1,
+        "type": "multiple_choice",
+        "question": "...",
+        "options": {{"A":"...","B":"...","C":"...","D":"..."}},
+        "answer": "A",
+        "explanation": "..."
+      }}
+    ]
+
+    CONTENT:
+    {final_summary}
+    """
+
     quiz_raw = call_gemini(quiz_prompt)
-    st.session_state.quiz = safe_json_load(quiz_raw)
 
-    update_progress(progress_bar, percent_box, 100)
-    status.text(T["done"])
+    # 🧹 安全解析
+    quiz_data = []
+    try:
+        cleaned = clean_json(quiz_raw)
+        quiz_data = json.loads(cleaned)
+    except Exception as e:
+        st.error("Quiz parsing failed — but app continues.")
+        quiz_data = []
 
-# ======================
-# 📚 显示总结
-# ======================
-if st.session_state.summary:
-    st.markdown(st.session_state.summary, unsafe_allow_html=True)
+    # ===== 完成 =====
+    progress_bar.progress(100)
+    percent_text.text("100%")
 
-# ======================
-# 🃏 Flashcards
-# ======================
-if st.session_state.flashcards:
-    st.subheader("🃏 Flashcards")
-    for i, card in enumerate(st.session_state.flashcards):
-        with st.expander(f"Card {i+1}"):
-            st.write("**Q:**", card.get("q", ""))
-            st.write("**A:**", card.get("a", ""))
+    st.success("✅ Analysis Complete!")
 
-# ======================
-# 🧪 Quiz
-# ======================
-if st.session_state.quiz:
-    st.subheader("🧪 Quiz")
-    st.json(st.session_state.quiz)
+    # =====================
+    # 📖 Summary
+    # =====================
+    st.header("📖 Review Summary")
+    st.markdown(final_summary)
 
-# ======================
-# 💬 AI 助教
-# ======================
-st.divider()
-st.subheader(T["assistant"])
+    # =====================
+    # 🧠 Flashcards
+    # =====================
+    st.header("🧠 Flashcards")
+    st.markdown(flashcards)
 
-user_q = st.text_input(T["ask"])
+    # =====================
+    # 📝 Quiz（稳如狗版）
+    # =====================
+    st.header("📝 Quiz")
 
-if user_q and st.session_state.summary:
+    if quiz_data:
+        for q in quiz_data:
+            st.subheader(q.get("question", ""))
+
+            options = q.get("options", {})
+            user_answer = st.radio(
+                "Choose:",
+                list(options.keys()),
+                key=f"quiz_{q.get('id')}"
+            )
+
+            if st.button("Check", key=f"check_{q.get('id')}"):
+                if user_answer == q.get("answer"):
+                    st.success("✅ Correct!")
+                else:
+                    st.error(f"❌ Correct answer: {q.get('answer')}")
+                    st.info(q.get("explanation"))
+    else:
+        st.warning("⚠️ Quiz generation failed.")
+
+# =====================
+# 🤖 AI 助教
+# =====================
+st.sidebar.header("🤖 AI Tutor")
+
+question = st.sidebar.text_input("Ask anything")
+
+if question:
     tutor_prompt = f"""
-You are a course tutor.
+    {lang_instruction()}
 
-Answer based ONLY on the course content below.
-
-Course:
-{st.session_state.summary}
-
-Question:
-{user_q}
-"""
+    Student question:
+    {question}
+    """
     answer = call_gemini(tutor_prompt)
-    st.write(answer)
+    st.sidebar.write(answer)
