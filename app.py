@@ -21,7 +21,7 @@ genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel(MODEL_NAME)
 
 # =====================
-# 🌍 语言系统（强制）
+# 🌍 语言系统
 # =====================
 lang = st.sidebar.selectbox("Language / 语言", ["English", "中文"])
 
@@ -44,15 +44,19 @@ def extract_text_from_pdfs(files):
     return full_text
 
 # =====================
-# ✂️ 文本分块（更安全）
+# ✂️ 文本分块（🔥 Cloud 稳定）
 # =====================
-def split_text(text, max_chars=8000):
+def split_text(text, max_chars=5000):
     return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
 # =====================
-# 🤖 Gemini 调用（带退避）
+# 🤖 Gemini 调用（🔥 最终稳态）
 # =====================
 def call_gemini(prompt, retries=4):
+    # ⭐ 输入保险（极关键）
+    if len(prompt) > 20000:
+        prompt = prompt[:20000]
+
     for attempt in range(retries):
         try:
             response = model.generate_content(
@@ -60,14 +64,16 @@ def call_gemini(prompt, retries=4):
                 generation_config={"temperature": TEMPERATURE}
             )
             return response.text
+
         except ResourceExhausted:
             if attempt < retries - 1:
-                time.sleep(6 * (attempt + 1))
+                wait = 6 * (attempt + 1)
+                time.sleep(wait)
             else:
                 raise
 
 # =====================
-# 🧹 JSON 清洗（超稳）
+# 🧹 JSON 清洗
 # =====================
 def clean_json(text):
     text = re.sub(r"```json|```", "", text)
@@ -77,12 +83,9 @@ def clean_json(text):
     return text
 
 # =====================
-# 🔥 递归压缩（核心修复）
+# 🔥 递归压缩（核心）
 # =====================
 def reduce_summaries(summaries, progress_bar, percent_text):
-    """
-    多轮递归压缩，防止 token 爆炸
-    """
     current = summaries
     base_progress = 65
 
@@ -109,6 +112,9 @@ def reduce_summaries(summaries, progress_bar, percent_text):
             reduced = call_gemini(reduce_prompt)
             new_round.append(reduced)
 
+            # ⭐ reduce 节流
+            time.sleep(0.8)
+
         current = new_round
 
     return current[0]
@@ -119,12 +125,12 @@ def reduce_summaries(summaries, progress_bar, percent_text):
 st.title("📚 AI Course Review System")
 
 uploaded_files = st.file_uploader(
-    "Upload course PDFs",
+    "Upload course PDFs (≤200MB total)",
     type="pdf",
     accept_multiple_files=True
 )
 
-# ✅ 显示文件数量
+# ✅ 显示上传数量
 if uploaded_files:
     st.success(f"✅ Uploaded {len(uploaded_files)} file(s)")
 
@@ -139,17 +145,16 @@ if st.button("🚀 Start Analysis") and uploaded_files:
     # ===== Step 1 =====
     progress_bar.progress(10)
     percent_text.text("10%")
-
     raw_text = extract_text_from_pdfs(uploaded_files)
 
     # ===== Step 2 =====
     progress_bar.progress(25)
     percent_text.text("25%")
-
     chunks = split_text(raw_text)
+
     partial_summaries = []
 
-    # ===== Step 3 分块总结 =====
+    # ===== Step 3 Map 阶段 =====
     for i, chunk in enumerate(chunks):
         percent = 25 + int((i / len(chunks)) * 40)
         progress_bar.progress(percent)
@@ -172,7 +177,10 @@ if st.button("🚀 Start Analysis") and uploaded_files:
         summary = call_gemini(prompt)
         partial_summaries.append(summary)
 
-    # ===== Step 4 🔥 安全 reduce =====
+        # ⭐⭐⭐⭐⭐ Cloud 防限流关键
+        time.sleep(0.8)
+
+    # ===== Step 4 Reduce =====
     final_summary = reduce_summaries(
         partial_summaries,
         progress_bar,
@@ -186,7 +194,7 @@ if st.button("🚀 Start Analysis") and uploaded_files:
     flash_prompt = f"""
     {lang_instruction()}
 
-    Generate 5–20 high-quality flashcards based on the review.
+    Generate 5–20 high-quality flashcards.
 
     CONTENT:
     {final_summary}
