@@ -6,332 +6,272 @@ import json
 import re
 
 # ==========================================
-# 1. 核心锁定：模型名称 (绝对不许修改)
+# 1. 核心锁定：模型名称 (绝对禁止修改)
 # ==========================================
-MODEL_ID = "gemini-2.5-flash"
+STR_MODEL_ID = "gemini-2.5-flash"
 
 # ==========================================
-# 2. 页面配置与顶级 CSS (解决所有 UI Bug)
+# 2. 页面配置与 CSS 深度定制
 # ==========================================
 st.set_page_config(page_title="AI Academic Terminal", layout="wide", initial_sidebar_state="collapsed")
 
-# 强制注入 CSS
 st.markdown("""
     <style>
-        /* 彻底移除侧边栏 */
-        [data-testid="stSidebar"] { display: none !important; }
-        
-        /* 顶部间距调整 */
+        /* 彻底消除侧边栏 */
+        [data-testid="stSidebar"], [data-testid="stSidebarNav"] { display: none !important; }
         .main .block-container { padding-top: 2rem !important; }
-        
-        /* 右上角语言切换容器 */
-        .header-container {
+
+        /* 顶部语言按钮布局：放置在右上角并防止遮挡 */
+        .top-nav {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            margin-top: -10px;
+            justify-content: flex-end;
+            padding: 10px 0;
+            margin-bottom: -30px;
         }
-        
-        /* 学习理解重点块 */
-        .learning-box {
-            background-color: #f0f4f8;
-            border-left: 6px solid #2e7d32;
+
+        /* 学习理解重点块样式 */
+        .learning-card {
+            background-color: #f8faff;
+            border-left: 6px solid #007bff;
             padding: 20px;
             border-radius: 10px;
             margin: 15px 0;
-            color: #1b5e20;
         }
-        
+
+        /* 重点高亮（Span着色） */
+        .key-concept {
+            background-color: #fff3bf;
+            color: #d9480f;
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
         /* 交互闪卡样式 */
-        .flashcard-box {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        .card-inner {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
             color: white;
-            padding: 50px;
+            padding: 60px 40px;
             border-radius: 20px;
             text-align: center;
-            min-height: 250px;
+            min-height: 300px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 1.5rem;
-            font-weight: bold;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+            font-size: 1.6rem;
+            font-weight: 700;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
             margin: 20px 0;
-            cursor: pointer;
         }
-        
-        /* 自测题目样式 */
-        .quiz-container {
-            background-color: #ffffff;
-            border: 1px solid #e0e0e0;
-            padding: 25px;
+
+        /* 自测题容器 */
+        .quiz-box {
+            background-color: white;
+            border: 1px solid #e1e4e8;
+            padding: 30px;
             border-radius: 15px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        }
-        
-        /* 重点高亮 */
-        .highlight-text {
-            color: #e65100;
-            font-weight: bold;
-            text-decoration: underline;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 复杂状态管理 (Session State)
+# 3. Session State 状态管理 (交互核心)
 # ==========================================
-# 基础状态
 if 'lang' not in st.session_state: st.session_state.lang = 'CN'
-if 'processed_data' not in st.session_state: st.session_state.processed_data = None
+if 'analysis_data' not in st.session_state: st.session_state.analysis_data = None
 if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 
-# 交互组件状态 (闪卡)
+# 交互组件专用状态
 if 'f_idx' not in st.session_state: st.session_state.f_idx = 0
-if 'f_flip' not in st.session_state: st.session_state.f_flip = False
-
-# 交互组件状态 (自测题)
+if 'f_reveal' not in st.session_state: st.session_state.f_reveal = False
 if 'q_idx' not in st.session_state: st.session_state.q_idx = 0
 if 'q_submitted' not in st.session_state: st.session_state.q_submitted = False
-if 'q_score' not in st.session_state: st.session_state.q_score = 0
-
-# 聊天状态
 if 'chat_history' not in st.session_state: st.session_state.chat_history = []
 
 # ==========================================
-# 4. 字典配置 (全界面翻译)
+# 4. 语言字典定义
 # ==========================================
 D = {
     'CN': {
         'switch': "English Version",
-        'title': "🎓 国际学校课程 AI 智能分析终端",
-        'up_label': "请上传课程 PDF 教材 (支持多文件同时上传)",
-        'clear': "🗑️ 清空所有内容",
-        'analyze': "🚀 开始深度分析并生成交互报告",
-        'tab1': "📖 学习理解",
-        'tab2': "📝 复习备考",
-        'tab3': "🃏 交互闪卡",
-        'tab4': "✍️ 模拟自测",
-        'tab5': "🤖 AI 助教",
-        'progress': "正在处理教材 (预计 20-40 秒)...",
-        'next': "下一题", 'prev': "上一题", 'reveal': "点击翻面 (查看答案)",
-        'submit': "提交答案", 'analysis': "结果深度分析",
-        'correct': "✅ 回答正确！", 'wrong': "❌ 回答错误！正确答案是：",
-        'restart': "重新开始测试",
-        'prompt_system': f"你是一名资深的国际学校教务主任。基于提供的PDF内容，生成报告。必须包含五个部分：[LEARNING]模块使用颜色区分重点内容，[REVISION]模块，[FLASHCARDS_JSON]模块和[QUIZ_JSON]模块。模型锁定为{MODEL_ID}。"
+        'title': "🎓 国际课程 AI 智能分析系统",
+        'up_label': "上传课程 PDF 教材 (支持多个文件)",
+        'up_count': "已成功上传 {} 个文件",
+        'clear': "🗑️ 一键清空",
+        'start': "🚀 开始分析并生成交互式报告",
+        'progress': "AI 教务主任分析中 (预计 20-30 秒)...",
+        'tab1': "📖 学习理解", 'tab2': "📝 复习备考", 'tab3': "🃏 闪卡训练", 'tab4': "✍️ 模拟自测", 'tab5': "🤖 AI 助教",
+        'prev': "上一题", 'next': "下一题", 'flip': "翻转 (查看答案)", 'submit': "提交答案",
+        'correct': "✅ 正确！", 'wrong': "❌ 错误！", 'ans_label': "正确答案是：", 'explain': "结果分析",
+        'restart': "重新开始", 'chat_hit': "输入课程问题...",
+        'prompt': f"你是一名有30年经验的国际学校教务主任。请针对教材生成报告。要求：[1] 学习理解部分重点词汇用 <KEY>词汇</KEY> 包裹。[2] 复习备考重点使用 💡。[3] 生成 JSON 格式的闪卡和自测题。模型锁定：{STR_MODEL_ID}"
     },
     'EN': {
         'switch': "切换至中文",
-        'title': "🎓 AI International Course Analytics Terminal",
-        'up_label': "Upload Course PDFs (Multiple supported)",
-        'clear': "🗑️ Clear and Reset",
-        'analyze': "🚀 Start Deep Analysis & Generate Interactive Report",
-        'tab1': "📖 Understanding",
-        'tab2': "📝 Revision",
-        'tab3': "🃏 Flashcards",
-        'tab4': "✍️ Self-Test",
-        'tab5': "🤖 AI Tutor",
-        'progress': "Processing materials (Estimated 20-40s)...",
-        'next': "Next", 'prev': "Previous", 'reveal': "Flip Card (See Answer)",
-        'submit': "Submit Answer", 'analysis': "Depth Analysis",
-        'correct': "✅ Correct!", 'wrong': "❌ Incorrect! The right answer is:",
-        'restart': "Restart Test",
-        'prompt_system': f"You are a senior Academic Director. Analyze PDF content. Include [LEARNING] with key highlights, [REVISION], [FLASHCARDS_JSON], and [QUIZ_JSON]. Model: {MODEL_ID}."
+        'title': "🎓 AI International Course Analytics",
+        'up_label': "Upload Course PDFs (Multiple)",
+        'up_count': "{} files uploaded",
+        'clear': "🗑️ Clear All",
+        'start': "🚀 Start Analysis & Interactive Report",
+        'progress': "Analyzing Content (Estimated 20-30s)...",
+        'tab1': "📖 Learning", 'tab2': "📝 Revision", 'tab3': "🃏 Flashcards", 'tab4': "✍️ Self-Test", 'tab5': "🤖 AI Tutor",
+        'prev': "Previous", 'next': "Next", 'flip': "Flip (See Answer)", 'submit': "Submit",
+        'correct': "✅ Correct!", 'wrong': "❌ Incorrect!", 'ans_label': "Correct Answer:", 'explain': "Analysis",
+        'restart': "Restart", 'chat_hit': "Ask about the course...",
+        'prompt': f"You are an Academic Director with 30 years experience. Generate report. [1] Wrap key terms in <KEY>term</KEY> in Learning section. [2] Use 💡 in Revision. [3] JSON for flashcards and quiz. Model: {STR_MODEL_ID}"
     }
 }
 ui = D[st.session_state.lang]
 
 # ==========================================
-# 5. 顶部布局 (语言按钮修正)
+# 5. UI 顶部导航 (语言切换按钮置顶)
 # ==========================================
-st.markdown('<div class="header-container">', unsafe_allow_html=True)
-col_t, col_l = st.columns([0.8, 0.2])
-with col_t:
+st.markdown('<div class="top-nav">', unsafe_allow_html=True)
+col_title, col_lang = st.columns([0.8, 0.2])
+with col_title:
     st.title(ui['title'])
-with col_l:
-    if st.button(ui['switch'], key="lang_toggle", use_container_width=True):
+with col_lang:
+    if st.button(ui['switch'], key="lang_btn", use_container_width=True):
         st.session_state.lang = 'EN' if st.session_state.lang == 'CN' else 'CN'
         st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 6. 文件上传管理
+# 6. 文件上传处理
 # ==========================================
 pdf_files = st.file_uploader(ui['up_label'], type=['pdf'], accept_multiple_files=True, key=f"up_{st.session_state.uploader_key}")
 
 if pdf_files:
-    if st.button(ui['clear']):
-        st.session_state.uploader_key += 1
-        st.session_state.processed_data = None
-        st.session_state.f_idx = 0
-        st.session_state.q_idx = 0
-        st.session_state.chat_history = []
-        st.rerun()
+    c1, c2 = st.columns([0.7, 0.3])
+    with c1:
+        st.success(ui['up_count'].format(len(pdf_files)))
+    with c2:
+        if st.button(ui['clear'], use_container_width=True):
+            st.session_state.uploader_key += 1
+            st.session_state.analysis_data = None
+            st.rerun()
 
 # ==========================================
-# 7. AI 核心处理 (正则表达式 + JSON 强校验)
+# 7. AI 分析引擎 (强力正则提取)
 # ==========================================
-def run_ai_analysis(files):
-    # 1. 提取文字
-    full_text = ""
+def get_ai_report(files):
+    # 提取 PDF
+    text = ""
     for f in files:
         reader = PdfReader(f)
-        for page in reader.pages:
-            full_text += (page.extract_text() or "") + "\n"
+        for page in reader.pages: text += (page.extract_text() or "") + "\n"
     
-    # 2. 调用 API
+    # 调用 Gemini
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel(MODEL_ID)
+    model = genai.GenerativeModel(STR_MODEL_ID)
     
-    # 构建极其详尽的 Prompt 确保输出不崩溃
     prompt = f"""
-    {ui['prompt_system']}
-    目标语言: {st.session_state.lang}
+    {ui['prompt']}
+    Language: {st.session_state.lang}
 
-    请严格按照以下格式输出内容：
-    
-    [LEARNING_START]
-    在此处总结主要内容。对于核心关键词和必考知识点，请将其包裹在 <MARK> 和 </MARK> 标签之间，以便我着色。
-    [LEARNING_END]
+    Output markers:
+    [LEARN] 内容... [/LEARN]
+    [REVISION] 内容... [/REVISION]
+    [FLASH_JSON] [{"q": "...", "a": "..."}] [/FLASH_JSON]
+    [QUIZ_JSON] [{"q": "...", "o": ["A","B","C","D"], "a": "A", "e": "..."}] [/QUIZ_JSON]
 
-    [REVISION_START]
-    抓取重点内容。使用 💡 标注重点。
-    [REVISION_END]
-
-    [FLASHCARDS_JSON]
-    [
-      {{"q": "问题内容", "a": "答案内容"}},
-      ... (生成 5-20 个)
-    ]
-    [QUIZ_JSON]
-    [
-      {{"question": "题目内容", "options": ["选项A", "选项B", "选项C", "选项D"], "answer": "A", "reason": "为什么选A的详细深度分析"}},
-      ... (生成 10-20 个)
-    ]
-
-    教材内容：
-    {full_text[:35000]}
+    Content:
+    {text[:35000]}
     """
-    
     response = model.generate_content(prompt)
     return response.text
 
-if pdf_files and st.button(ui['analyze'], type="primary", use_container_width=True):
-    prog_bar = st.progress(0)
-    prog_status = st.empty()
-    
-    prog_status.info(ui['progress'])
-    
-    # 模拟进度条
-    for p in range(1, 40):
-        time.sleep(0.05)
-        prog_bar.progress(p)
-    
-    # 获取数据
-    raw_response = run_ai_analysis(pdf_files)
-    
-    for p in range(41, 101):
-        time.sleep(0.01)
-        prog_bar.progress(p)
-        
-    st.session_state.processed_data = raw_response
-    st.session_state.f_idx = 0
-    st.session_state.q_idx = 0
-    st.session_state.q_submitted = False
-    st.rerun()
+if pdf_files and st.button(ui['start'], type="primary", use_container_width=True):
+    with st.status(ui['progress']) as status:
+        res = get_ai_report(pdf_files)
+        st.session_state.analysis_data = res
+        # 重置交互状态
+        st.session_state.f_idx = 0
+        st.session_state.q_idx = 0
+        st.session_state.q_submitted = False
+        status.update(label="Complete!", state="complete")
+        st.rerun()
 
 # ==========================================
-# 8. 交互式 Tabs 呈现
+# 8. 交互展示区域
 # ==========================================
-if st.session_state.processed_data:
-    data = st.session_state.processed_data
+if st.session_state.analysis_data:
+    raw = st.session_state.analysis_data
     
-    # 安全提取正则函数
-    def extract_section(start_tag, end_tag, text):
+    # 正则提取器
+    def extract(tag, source):
         try:
-            pattern = f"{re.escape(start_tag)}(.*?){re.escape(end_tag)}"
-            return re.findall(pattern, text, re.DOTALL)[0].strip()
+            pattern = f"\[{tag}\](.*?)\[/{tag}\]"
+            return re.findall(pattern, source, re.DOTALL)[0].strip()
         except: return ""
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([ui['tab1'], ui['tab2'], ui['tab3'], ui['tab4'], ui['tab5']])
+    tabs = st.tabs([ui['tab1'], ui['tab2'], ui['tab3'], ui['tab4'], ui['tab5']])
 
-    # --- TAB 1: 学习理解 (着色处理) ---
-    with tab1:
-        content_l = extract_section("[LEARNING_START]", "[LEARNING_END]", data)
-        # 将 <MARK> 替换为 HTML 着色标签
-        colored_content = content_l.replace("<MARK>", '<span class="highlight-text">').replace("</MARK>", '</span>')
-        st.markdown(f'<div class="learning-box">{colored_content}</div>', unsafe_allow_html=True)
+    # --- Tab 1: 学习理解 (着色处理) ---
+    with tabs[0]:
+        c = extract("LEARN", raw)
+        # 高亮转换
+        c = c.replace("<KEY>", '<span class="key-concept">').replace("</KEY>", '</span>')
+        st.markdown(f'<div class="learning-card">{c}</div>', unsafe_allow_html=True)
 
-    # --- TAB 2: 复习备考 ---
-    with tab2:
-        content_r = extract_section("[REVISION_START]", "[REVISION_END]", data)
-        st.info(content_r)
+    # --- Tab 2: 复习备考 ---
+    with tabs[1]:
+        st.info(extract("REVISION", raw))
 
-    # --- TAB 3: 交互闪卡 (一题一题显示) ---
-    with tab3:
+    # --- Tab 3: 交互闪卡 (一题一题) ---
+    with tabs[2]:
         try:
-            f_json_str = data.split("[FLASHCARDS_JSON]")[1].split("[QUIZ_JSON]")[0].strip()
-            flashcards = json.loads(f_json_str)
+            f_list = json.loads(extract("FLASH_JSON", raw))
+            f_idx = st.session_state.f_idx
+            card = f_list[f_idx]
             
-            curr_f = st.session_state.f_idx
-            card = flashcards[curr_f]
+            st.write(f"Card {f_idx + 1} / {len(f_list)}")
+            content = card['a'] if st.session_state.f_reveal else card['q']
+            st.markdown(f'<div class="card-inner">{content}</div>', unsafe_allow_html=True)
             
-            st.write(f"Card {curr_f + 1} / {len(flashcards)}")
-            
-            # 显示内容 (翻面逻辑)
-            card_text = card['a'] if st.session_state.f_flip else card['q']
-            if st.markdown(f'<div class="flashcard-box">{card_text}</div>', unsafe_allow_html=True):
-                pass # 占位
-            
-            col_f1, col_f2, col_f3 = st.columns(3)
-            with col_f1:
-                if st.button(ui['prev'], key="f_prev") and curr_f > 0:
+            b1, b2, b3 = st.columns(3)
+            with b1:
+                if st.button(ui['prev'], key="f_p") and f_idx > 0:
                     st.session_state.f_idx -= 1
-                    st.session_state.f_flip = False
+                    st.session_state.f_reveal = False
                     st.rerun()
-            with col_f2:
-                if st.button(ui['reveal'], key="f_reveal", use_container_width=True):
-                    st.session_state.f_flip = not st.session_state.f_flip
+            with b2:
+                if st.button(ui['flip'], key="f_f", use_container_width=True):
+                    st.session_state.f_reveal = not st.session_state.f_reveal
                     st.rerun()
-            with col_f3:
-                if st.button(ui['next'], key="f_next") and curr_f < len(flashcards)-1:
+            with b3:
+                if st.button(ui['next'], key="f_n") and f_idx < len(f_list)-1:
                     st.session_state.f_idx += 1
-                    st.session_state.f_flip = False
+                    st.session_state.f_reveal = False
                     st.rerun()
-        except: st.error("Flashcard content format error.")
+        except: st.warning("Flashcard format error.")
 
-    # --- TAB 4: 交互模拟考 (一题一题+解析) ---
-    with tab4:
+    # --- Tab 4: 模拟自测 (答题+分析) ---
+    with tabs[3]:
         try:
-            q_json_str = data.split("[QUIZ_JSON]")[1].split("[END]")[0] if "[END]" in data else data.split("[QUIZ_JSON]")[1]
-            quizzes = json.loads(q_json_str)
+            q_list = json.loads(extract("QUIZ_JSON", raw))
+            q_idx = st.session_state.q_idx
+            q = q_list[q_idx]
             
-            curr_q_idx = st.session_state.q_idx
-            q_data = quizzes[curr_q_idx]
+            st.markdown('<div class="quiz-box">', unsafe_allow_html=True)
+            st.subheader(f"Q{q_idx + 1}: {q['q']}")
             
-            st.markdown(f'<div class="quiz-container">', unsafe_allow_html=True)
-            st.subheader(f"Question {curr_q_idx + 1}: {q_data['question']}")
-            
-            # 选择题
-            u_choice = st.radio("Choose one:", q_data['options'], key=f"quiz_opt_{curr_q_idx}")
+            choice = st.radio("Options:", q['o'], key=f"q_choice_{q_idx}")
             
             if not st.session_state.q_submitted:
                 if st.button(ui['submit'], type="primary"):
                     st.session_state.q_submitted = True
                     st.rerun()
             else:
-                # 判定对错
-                is_correct = u_choice.startswith(q_data['answer'])
+                is_correct = choice.startswith(q['a'])
                 if is_correct: st.success(ui['correct'])
-                else: st.error(f"{ui['wrong']} {q_data['answer']}")
+                else: st.error(f"{ui['wrong']} {ui['ans_label']} {q['a']}")
                 
-                # 显示解析
-                st.info(f"💡 **{ui['analysis']}:** {q_data['reason']}")
+                st.info(f"💡 **{ui['explain']}:** {q['e']}")
                 
-                # 下一题按钮
-                if st.button(ui['next'] if curr_q_idx < len(quizzes)-1 else ui['restart']):
-                    if curr_q_idx < len(quizzes)-1:
+                if st.button(ui['next'] if q_idx < len(q_list)-1 else ui['restart']):
+                    if q_idx < len(q_list)-1:
                         st.session_state.q_idx += 1
                         st.session_state.q_submitted = False
                     else:
@@ -339,4 +279,19 @@ if st.session_state.processed_data:
                         st.session_state.q_submitted = False
                     st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
-        except: st.error("Quiz content format
+        except: st.warning("Quiz format error.")
+
+    # --- Tab 5: AI 助教 ---
+    with tabs[4]:
+        for m in st.session_state.chat_history:
+            with st.chat_message(m["role"]): st.write(m["content"])
+        
+        if prompt := st.chat_input(ui['chat_hit']):
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            with st.chat_message("user"): st.write(prompt)
+            
+            with st.chat_message("assistant"):
+                m_bot = genai.GenerativeModel(STR_MODEL_ID)
+                resp = m_bot.generate_content(f"Context: {raw[:5000]}\nQuestion: {prompt}")
+                st.write(resp.text)
+                st.session_state.chat_history.append({"role": "assistant", "content": resp.text})
